@@ -1,0 +1,14 @@
+source: "E://Amazon Photos Downloads//Yaneth Collection"
+dest: "E://Yaneth Photos Sorted - Amazon"
+
+min_file_size: 1
+
+include_photos: true
+include_videos: true
+include_raw: true
+include_other: true
+
+dry_run: false
+
+log_file: "logs/media_organizer.log"
+db_path: "media.db"
