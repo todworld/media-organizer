@@ -1,4 +1,5 @@
 # services/scan_service.py
+
 import os
 
 from organizer_io.fs_scanner import iter_files
@@ -25,7 +26,7 @@ class ScanService:
         progress_cb=None,
         skip_cb=None,          # NEW: skip_cb(reason, path)
         stop_flag=None,
-        progress_every: int = 200,  # NEW: makes behavior explicit
+        progress_every: int = 200,
     ):
         """Scan files under source_root and insert file records.
 
@@ -35,12 +36,11 @@ class ScanService:
         - RAW: tries EXIF when available, otherwise falls back.
         - OTHER: includes non-media files when include_other=True.
         - Falls back to filesystem modified time.
-        - progress_cb(count, path) called every ~progress_every accepted files, and at end.
-        - skip_cb(reason, path) called for skipped candidates (best-effort).
+        - progress_cb(count, path) called every ~progress_every accepted files.
+        - skip_cb(reason, path) called for skipped or fallback conditions.
         - stop_flag() can abort the scan.
         """
 
-        # Optional: skip known “noise” extensions
         try:
             from domain.constants import EXCLUDED_EXTS
         except Exception:
@@ -51,7 +51,7 @@ class ScanService:
                 try:
                     skip_cb(reason, path)
                 except Exception:
-                    pass  # never break scan due to reporting
+                    pass
 
         count = 0
         rows = []
@@ -62,7 +62,6 @@ class ScanService:
                 break
 
             try:
-                # stat
                 try:
                     st = os.stat(path)
                 except FileNotFoundError:
@@ -82,7 +81,6 @@ class ScanService:
 
                 ext = os.path.splitext(path)[1].lower()
 
-                # Skip excluded extensions early
                 if ext in EXCLUDED_EXTS:
                     _skip("excluded_extension", path)
                     continue
@@ -104,17 +102,18 @@ class ScanService:
 
                 mtime = mtime_iso(path)
 
-                # Prefer capture/creation timestamps when available
                 exif_dt = None
                 video_dt = None
 
                 if media_type == "PHOTO":
-                    try:
-                        exif_dt = extract_exif_datetime(path)
-                    except Exception:
-                        _skip("exif_extract_error", path)
-                        exif_dt = None
-                    chosen_date, date_source = choose_date(exif_dt, mtime, primary_source="TAKEN_EXIF")
+                    exif_dt = extract_exif_datetime(path)
+                    if not exif_dt:
+                        _skip("photo_missing_exif_datetime", path)
+                    chosen_date, date_source = choose_date(
+                        exif_dt,
+                        mtime,
+                        primary_source="TAKEN_EXIF",
+                    )
 
                 elif media_type == "VIDEO":
                     try:
@@ -122,19 +121,31 @@ class ScanService:
                     except Exception:
                         _skip("video_meta_extract_error", path)
                         video_dt = None
-                    chosen_date, date_source = choose_date(video_dt, mtime, primary_source="CREATED_META")
+                    chosen_date, date_source = choose_date(
+                        video_dt,
+                        mtime,
+                        primary_source="CREATED_META",
+                    )
 
                 elif media_type == "RAW":
-                    try:
-                        exif_dt = extract_exif_datetime(path)
-                    except Exception:
-                        _skip("exif_extract_error", path)
-                        exif_dt = None
-                    chosen_date, date_source = choose_date(exif_dt, mtime, primary_source="TAKEN_EXIF")
+                    exif_dt = extract_exif_datetime(path)
+                    if not exif_dt:
+                        _skip("raw_missing_exif_datetime", path)
+                    chosen_date, date_source = choose_date(
+                        exif_dt,
+                        mtime,
+                        primary_source="TAKEN_EXIF",
+                    )
 
                 else:
-                    # OTHER: no EXIF/video metadata extraction
-                    chosen_date, date_source = choose_date(None, mtime, primary_source="PRIMARY")
+                    chosen_date, date_source = choose_date(
+                        None,
+                        mtime,
+                        primary_source="PRIMARY",
+                    )
+
+                # Record which date source was actually used (very useful for diagnostics)
+                _skip(f"date_source:{media_type}:{date_source}", path)
 
                 rows.append(
                     {
@@ -164,13 +175,16 @@ class ScanService:
                     rows.clear()
 
             except Exception as e:
-                # This is an unexpected error in processing a candidate path
                 _skip("scan_exception", path)
-                self.error_repo.add(run_id, "SCAN", f"{type(e).__name__}: {e}", source_path=path)
+                self.error_repo.add(
+                    run_id,
+                    "SCAN",
+                    f"{type(e).__name__}: {e}",
+                    source_path=path,
+                )
 
         if rows:
             self.file_repo.upsert_files(run_id, rows)
 
-        # final progress ping
         if progress_cb:
             progress_cb(count, "")
